@@ -14,6 +14,7 @@ import numpy as np
 #from sklearn.feature_selection import SelectKBest, chi2
 #from sklearn.linear_model import RidgeClassifier
 from sklearn.svm import LinearSVC
+from sklearn.calibration import CalibratedClassifierCV
 #from sklearn import svm
 #from sklearn.utils.extmath import density
 from sklearn import metrics
@@ -49,17 +50,29 @@ def cleanText(text):
     return text
 
 
-def benchmark():
-    '''Processamento do conjunto de treinamento e escolha dos exemplos a serem rotulados'''
+def benchmarkBvSB():
+    '''Processamento do conjunto de treinamento e escolha dos exemplos a serem rotulados utilizando o método Best vs Second Best'''
 
     clf.fit(X_train, y_train)
 
-    confidences = clf.decision_function(X_unlabeled)
+    print('Labeled examples: ', df_train.label.size)
+    # Para cada instância, obtém as probabilidades de pertencer a cada classe
+    probabilities = clf.predict_proba(X_unlabeled)
+
+    BvSB = []
+    for list in probabilities:
+        list = list.tolist()
+        # Obtém a probabilidade da instância pertencer à classe mais provável
+        best = list.pop(list.index(max(list)))
+        # Obtém a probabilidade da instância pertencer à segunda classe mais provável
+        second_best = list.pop(list.index(max(list)))
+        # Calcula a diferença e adiciona à lista
+        BvSB.append(best-second_best)
 
     df = pd.DataFrame(clf.predict(X_unlabeled))
-    df = df.assign(conf = confidences.max(1))
+    df = df.assign(conf = BvSB)
     df.columns = ['label', 'conf']
-    df.sort_values(by=['conf'], ascending=False, inplace=True)
+    df.sort_values(by=['conf'], ascending=True, inplace=True)
     question_samples = []
 
     for category in categories:
@@ -85,30 +98,31 @@ def clfTest():
 
 
 
-clf = LinearSVC(loss='squared_hinge', penalty='l2', dual=False, tol=1e-3)
+clf = LinearSVC(loss='squared_hinge', penalty='l2', dual=False, tol=1e-3, class_weight='balanced')
+clf = CalibratedClassifierCV(base_estimator=estimator, cv=2)
 
-# Quantidade de requisicoes de rotulos para o oraculo que serao feitas por vez
-NUM_QUESTIONS = 2
-categories = [
-    'secretaria de estado de seguranca publica',
-    'secretaria de estado de cultura',
-    'secretaria de estado de fazenda planejamento orcamento e gestao',
-    'casa civil',
-    'secretaria de estado de obras e infraestrutura',
-    'secretaria de estado de educacao',
-    'defensoria publica do distrito federal',
-    'secretaria de estado de saude',
-    'tribunal de contas do distrito federal',
-    'secretaria de estado de desenvolvimento urbano e habitacao',
-    'poder legislativo',
-    'secretaria de estado de justica e cidadania',
-    'secretaria de estado de transporte e mobilidade',
-    'controladoria geral do distrito federal',
-    'poder executivo',
-    'secretaria de estado de agricultura abastecimento e desenvolvimento rural',
-    'secretaria de estado de economia desenvolvimento inovacao ciencia e tecnologia',
-    'secretaria de estado de desenvolvimento economico',
-    'secretaria de estado do meio ambiente']
+# Quantidade de requisições de rótulos para o oráculo que serão feitas por vez
+NUM_QUESTIONS = 3
+# categories = [
+#     'secretaria de estado de seguranca publica',
+#     'secretaria de estado de cultura',
+#     'secretaria de estado de fazenda planejamento orcamento e gestao',
+#     'casa civil',
+#     'secretaria de estado de obras e infraestrutura',
+#     'secretaria de estado de educacao',
+#     'defensoria publica do distrito federal',
+#     'secretaria de estado de saude',
+#     'tribunal de contas do distrito federal',
+#     'secretaria de estado de desenvolvimento urbano e habitacao',
+#     'poder legislativo',
+#     'secretaria de estado de justica e cidadania',
+#     'secretaria de estado de transporte e mobilidade',
+#     'controladoria geral do distrito federal',
+#     'poder executivo',
+#     'secretaria de estado de agricultura, abastecimento e desenvolvimento rural',
+#     'secretaria de estado de economia desenvolvimento, inovacao, ciencia e tecnologia',
+#     'secretaria de estado de desenvolvimento economico',
+#     'secretaria de estado do meio ambiente']
 
 PATH_TRAIN = "dodftrain.csv"
 ENCODING = 'utf-8'
@@ -119,10 +133,12 @@ df = pd.read_csv(PATH_TRAIN,encoding = ENCODING,header = 0)
 df['label'] = df['label'].map(lambda com: cleanText(com))
 df['text'] = df['text'].map(lambda com: cleanText(com))
 
+categories = df.label.unique()
+
 """Divisao do dataset entre informacoes de treinamento e teste:"""
 
-df_test = df.sample(frac = 0.33, random_state = 1)
-# df_test = df.sample(n=600, random_state = 1)
+# df_test = df.sample(frac = 0.33, random_state = 1)
+df_test = df.sample(n=230, random_state = 1)
 
 df_train = df.drop(index = df_test.index)
 
@@ -138,9 +154,9 @@ MAX_SIZE = df_train.label.size
 
 df_labeled = pd.DataFrame()
 
-for categorie in categories:
-    df_labeled = df_labeled.append( df_train[df_train.label==categorie][0:1], ignore_index=True )
-    df_train.drop(index = df_train[df_train.label==categorie][0:1].index, inplace=True)
+for category in categories:
+    df_labeled = df_labeled.append( df_train[df_train.label==category][0:1], ignore_index=True )
+    df_train.drop(index = df_train[df_train.label==category][0:1].index, inplace=True)
 
 df_unlabeled = df_train
 
@@ -164,12 +180,11 @@ while True:
     df_unified = df_train.append(df_unlabeled)
     X_unified  = vectorizer.transform(df_unified.text)
 
-    question_samples = benchmark()
+    question_samples = benchmarkBvSB()
     result_x.append(clfTest())
     result_y.append(df_train.label.size)
 
-    if (df_train.label.size < MAX_SIZE - (len(categories) * NUM_QUESTIONS + 1)) and ((len(result_x) < 2) or ( (result_x[-1] - result_x[-2] > 0.005) or (result_x[-1] < result_x[-2]) )):
-        print('Labeled examples: ', df_train.label.size)
+    if (df_train.label.size < MAX_SIZE - (len(categories) * NUM_QUESTIONS + 1)) and ((len(result_x) < 2) or ( (result_x[-1] - result_x[-2] > -1) or (result_x[-1] < result_x[-2]) )):
         insert = {'label':[], 'text':[]}
         cont = 0
         for i in question_samples:
@@ -189,7 +204,7 @@ while True:
         result_x_active = result_x
         plt.plot(result_y_active, result_x_active, label='Active learning')
         #plt.plot(result_y_spv, result_x_spv,label = 'Convencional')
-        plt.axis([0, 500, 0.3, 1.0])
+        plt.axis([0, df_train.label.size, 0.3, 1.0])
         plt.legend(loc='lower right', shadow=True, fontsize='x-large')
         plt.grid(True)
         plt.xlabel('Training set size')
